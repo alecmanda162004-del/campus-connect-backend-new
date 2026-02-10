@@ -25,7 +25,7 @@ const PORT = process.env.PORT || 5000;
 // CORS – allow your actual frontend domains
 app.use(cors({
   origin: [
-    'https://campus-connect-frontend3.vercel.app',   // ← your Vercel URL
+    'https://campus-connect-frontend-three.vercel.app',   // ← your Vercel URL
     'http://localhost:3000',                         // local dev
     'http://localhost:5173'                          // if using Vite
   ],
