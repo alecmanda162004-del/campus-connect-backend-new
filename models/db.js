@@ -6,9 +6,9 @@ require('dotenv').config();
 // PostgreSQL connection pool – uses ONLY environment variable
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false  // Required for cloud providers (Neon, Render, Supabase, etc.)
-  },
+  ssl: process.env.NODE_ENV === 'production' 
+        ? { rejectUnauthorized: false } // Required for cloud providers (Neon, Render, Supabase, etc.)
+        : false,                        // Disable SSL for local development
   // Optional: increase connection timeout if Render/Neon is slow
   connectionTimeoutMillis: 5000,
   idleTimeoutMillis: 30000,

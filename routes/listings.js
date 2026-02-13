@@ -6,8 +6,109 @@ const authMiddleware = require('../middleware/auth');
 const jwt = require('jsonwebtoken');
 
 // ────────────────────────────────────────────────
-// GET ROUTES
+// GET /api/listings
+// Supports: ?page=1&limit=24&sort=newest|price-low|price-high
 // ────────────────────────────────────────────────
+router.get('/', async (req, res) => {
+  try {
+    // Query params
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 24;
+    const sort = req.query.sort || 'newest';
+
+    // Validate
+    if (page < 1 || limit < 1 || limit > 100) {
+      return res.status(400).json({ message: 'Invalid page or limit' });
+    }
+
+    // Sort mapping
+    let orderBy = 'created_at DESC';
+    if (sort === 'price-low') orderBy = 'price ASC';
+    if (sort === 'price-high') orderBy = 'price DESC';
+
+    const offset = (page - 1) * limit;
+
+    // Main query (approved listings only for public marketplace)
+    const listingsQuery = `
+      SELECT 
+        id, user_id, title, description, price, condition, whatsapp_phone,
+        image_urls, stock_quantity, category, average_rating, rating_count,
+        created_at
+      FROM listings
+      WHERE status = 'approved'
+      ORDER BY ${orderBy}
+      LIMIT $1 OFFSET $2
+    `;
+
+    const [listingsResult, totalResult] = await Promise.all([
+      pool.query(listingsQuery, [limit, offset]),
+      pool.query('SELECT COUNT(*) FROM listings WHERE status = $1', ['approved'])
+    ]);
+
+    const listings = listingsResult.rows.map(row => ({
+      ...row,
+      price: Number(row.price) || 0,
+      average_rating: Number(row.average_rating) || 0,
+      rating_count: Number(row.rating_count) || 0,
+      stock_quantity: Number(row.stock_quantity) || 0,
+    }));
+
+    const total = parseInt(totalResult.rows[0].count);
+
+    res.status(200).json({
+      status: 'success',
+      data: listings,
+      pagination: {
+        currentPage: page,
+        totalPages: Math.ceil(total / limit),
+        totalItems: total,
+        hasNext: page * limit < total,
+        hasPrev: page > 1
+      }
+    });
+  } catch (err) {
+    console.error('Error fetching listings:', err.stack);
+    res.status(500).json({ status: 'error', message: 'Failed to fetch listings' });
+  }
+});
+
+// ────────────────────────────────────────────────
+// NEW: GET /api/listings/categories/popular
+// Returns top 10 categories with counts
+// ────────────────────────────────────────────────
+router.get('/categories/popular', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        category,
+        COUNT(*) as count
+      FROM listings
+      WHERE status = 'approved' AND category IS NOT NULL AND category != ''
+      GROUP BY category
+      ORDER BY count DESC
+      LIMIT 10
+    `);
+
+    const popular = result.rows.map(row => ({
+      category: row.category,
+      count: parseInt(row.count)
+    }));
+
+    res.status(200).json({
+      status: 'success',
+      data: popular
+    });
+  } catch (err) {
+    console.error('Error fetching popular categories:', err.stack);
+    res.status(500).json({ status: 'error', message: 'Server error' });
+  }
+});
+
+// ────────────────────────────────────────────────
+// Other existing routes (unchanged)
+// ────────────────────────────────────────────────
+
+// Get single listing, user listings, ratings, etc. remain the same...
 
 // Get all approved listings (Marketplace) - public, paginated
 router.get('/', async (req, res) => {

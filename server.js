@@ -1,7 +1,7 @@
-// backend/server.js
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
+const { Pool } = require('pg'); // Added for PostgreSQL connection
 
 // Import your route files
 const healthRouter = require('./routes/health');
@@ -13,7 +13,14 @@ const usersRouter = require('./routes/users');
 const settingsRouter = require('./routes/settings');
 const feedbackRouter = require('./routes/feedback');
 
+// Load environment variables
 dotenv.config();
+
+// Create PostgreSQL connection pool
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+});
 
 const app = express();
 
@@ -25,9 +32,9 @@ const PORT = process.env.PORT || 5000;
 // CORS – allow your actual frontend domains
 app.use(cors({
   origin: [
-    'https://campus-connect-frontend-three.vercel.app',   // ← your Vercel URL
-    'http://localhost:3000',                         // local dev
-    'http://localhost:5173'                          // if using Vite
+    'https://campus-connect-frontend-three.vercel.app',
+    'http://localhost:3000',
+    'http://localhost:5173'
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -36,6 +43,41 @@ app.use(cors({
 
 // Parse JSON bodies
 app.use(express.json());
+
+// ────────────────────────────────────────────────
+// NEW: Auto-increment visits counter on real page loads (skip API/admin/static)
+app.use(async (req, res, next) => {
+  // Skip counting for:
+  // - API calls (/api/...)
+  // - Admin paths
+  // - Static files (anything with .js, .css, .png, etc.)
+  // - Root and health endpoints
+  if (
+    req.path.startsWith('/api') ||
+    req.path.startsWith('/admin') ||
+    req.path.includes('.') ||
+    req.path === '/' ||
+    req.path === '/health'
+  ) {
+    return next();
+  }
+
+  try {
+    await pool.query(`
+      INSERT INTO stats (key, value) 
+      VALUES ('visits', 1)
+      ON CONFLICT (key) 
+      DO UPDATE SET 
+        value = stats.value + 1,
+        updated_at = CURRENT_TIMESTAMP
+    `);
+  } catch (err) {
+    console.error('Visit increment failed:', err.message);
+    // Don't block the request - just log
+  }
+
+  next();
+});
 
 // ────────────────────────────────────────────────
 // Routes
@@ -49,7 +91,39 @@ app.use('/api/settings', settingsRouter);
 app.use('/api/feedback', feedbackRouter);
 
 // ────────────────────────────────────────────────
-// Simple root + health endpoint (useful for Render/Vercel)
+// Admin Stats Endpoints (added directly here)
+app.get('/api/admin/stats/users', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT COUNT(*) AS total FROM users');
+    const total = parseInt(result.rows[0].total, 10);
+    res.json({ total });
+  } catch (err) {
+    console.error('Users stats error:', err.message);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+app.get('/api/admin/stats/visits', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      INSERT INTO stats (key, value) 
+      VALUES ('visits', 1)
+      ON CONFLICT (key) 
+      DO UPDATE SET 
+        value = stats.value + 1,
+        updated_at = CURRENT_TIMESTAMP
+      RETURNING value AS "totalVisits"
+    `);
+    const totalVisits = parseInt(result.rows[0].totalVisits, 10);
+    res.json({ totalVisits });
+  } catch (err) {
+    console.error('Visits stats error:', err.message);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// ────────────────────────────────────────────────
+// Simple root + health endpoint
 app.get('/', (req, res) => {
   res.json({
     message: 'Campus-Connect Backend is running!',
@@ -68,7 +142,7 @@ app.get('/health', (req, res) => {
 });
 
 // ────────────────────────────────────────────────
-// 404 handler – catch unknown routes
+// 404 handler
 app.use((req, res) => {
   res.status(404).json({
     error: 'Not Found',
@@ -92,7 +166,8 @@ app.listen(PORT, () => {
   console.log(`Backend server running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`CORS allowed origins:`, [
-    'https://campus-connect-frontend3.vercel.app',
-    'http://localhost:3000'
+    'https://campus-connect-frontend-three.vercel.app',
+    'http://localhost:3000',
+    'http://localhost:5173'
   ]);
 });
