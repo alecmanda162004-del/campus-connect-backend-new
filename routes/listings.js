@@ -1,59 +1,87 @@
-// backend/routes/listings.js
 const express = require('express');
 const router = express.Router();
 const pool = require('../models/db');
 const authMiddleware = require('../middleware/auth');
 const jwt = require('jsonwebtoken');
 
+// Helper to safely convert numeric fields and ensure arrays
+const cleanListing = (row) => ({
+  ...row,
+  price: Number(row.price) || 0,
+  average_rating: Number(row.average_rating) || 0,
+  rating_count: Number(row.rating_count) || 0,
+  stock_quantity: Number(row.stock_quantity) || 0,
+  image_urls: Array.isArray(row.image_urls) ? row.image_urls : [],
+  variants: Array.isArray(row.variants) ? row.variants : [],
+});
+
 // ────────────────────────────────────────────────
 // GET /api/listings
-// Supports: ?page=1&limit=24&sort=newest|price-low|price-high
+// Public – paginated, sorted, searchable, filterable marketplace listings
 // ────────────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
-    // Query params
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 24;
     const sort = req.query.sort || 'newest';
+    const search = req.query.search?.trim();
+    const category = req.query.category;
 
-    // Validate
     if (page < 1 || limit < 1 || limit > 100) {
       return res.status(400).json({ message: 'Invalid page or limit' });
     }
 
-    // Sort mapping
-    let orderBy = 'created_at DESC';
-    if (sort === 'price-low') orderBy = 'price ASC';
-    if (sort === 'price-high') orderBy = 'price DESC';
+    let orderBy = 'l.created_at DESC';
+    if (sort === 'price-low') orderBy = 'l.price ASC';
+    if (sort === 'price-high') orderBy = 'l.price DESC';
 
     const offset = (page - 1) * limit;
 
-    // Main query (approved listings only for public marketplace)
+    let where = "WHERE l.status = 'approved'";
+    const params = [];
+    let paramIndex = 1;
+
+    if (search) {
+      where += ` AND (l.title ILIKE $${paramIndex} OR l.description ILIKE $${paramIndex})`;
+      params.push(`%${search}%`);
+      paramIndex++;
+    }
+
+    if (category && category !== 'All') {
+      where += ` AND l.category = $${paramIndex}`;
+      params.push(category);
+      paramIndex++;
+    }
+
     const listingsQuery = `
       SELECT 
-        id, user_id, title, description, price, condition, whatsapp_phone,
-        image_urls, stock_quantity, category, average_rating, rating_count,
-        created_at
-      FROM listings
-      WHERE status = 'approved'
+        l.id, l.user_id, l.title, l.description, l.price, l.condition, l.whatsapp_phone,
+        l.image_urls, l.stock_quantity, l.category, l.average_rating, l.rating_count,
+        l.variants,
+        l.created_at,
+        u.username, u.shop_name
+      FROM listings l
+      JOIN users u ON l.user_id = u.id
+      ${where}
       ORDER BY ${orderBy}
-      LIMIT $1 OFFSET $2
+      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
     `;
+    params.push(limit, offset);
 
-    const [listingsResult, totalResult] = await Promise.all([
-      pool.query(listingsQuery, [limit, offset]),
-      pool.query('SELECT COUNT(*) FROM listings WHERE status = $1', ['approved'])
+    const totalQuery = `
+      SELECT COUNT(*) 
+      FROM listings l
+      ${where.replace('l.', '')}
+    `;
+    const totalParams = params.slice(0, -2);
+
+    const [listingsRes, totalRes] = await Promise.all([
+      pool.query(listingsQuery, params),
+      pool.query(totalQuery, totalParams)
     ]);
 
-    const listings = listingsResult.rows.map(row => ({
-      ...row,
-      price: Number(row.price) || 0,
-      average_rating: Number(row.average_rating) || 0,
-      rating_count: Number(row.rating_count) || 0,
-      stock_quantity: Number(row.stock_quantity) || 0,
-    }));
-
-    const total = parseInt(totalResult.rows[0].count);
+    const listings = listingsRes.rows.map(cleanListing);
+    const total = parseInt(totalRes.rows[0].count);
 
     res.status(200).json({
       status: 'success',
@@ -68,20 +96,47 @@ router.get('/', async (req, res) => {
     });
   } catch (err) {
     console.error('Error fetching listings:', err.stack);
-    res.status(500).json({ status: 'error', message: 'Failed to fetch listings' });
+    res.status(500).json({ message: 'Failed to fetch listings' });
   }
 });
 
 // ────────────────────────────────────────────────
-// NEW: GET /api/listings/categories/popular
-// Returns top 10 categories with counts
+// GET /api/listings/:id
+// ────────────────────────────────────────────────
+router.get('/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const result = await pool.query(`
+      SELECT 
+        l.*,
+        u.username,
+        u.shop_name,
+        u.avatar_url,
+        u.cover_image_url
+      FROM listings l
+      JOIN users u ON l.user_id = u.id
+      WHERE l.id = $1 AND l.status = 'approved'
+    `, [id]);
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: 'Listing not found or not approved' });
+    }
+
+    res.json(cleanListing(result.rows[0]));
+  } catch (err) {
+    console.error('Error fetching listing:', err.stack);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// ────────────────────────────────────────────────
+// GET /api/listings/categories/popular
 // ────────────────────────────────────────────────
 router.get('/categories/popular', async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT 
-        category,
-        COUNT(*) as count
+      SELECT category, COUNT(*) as count
       FROM listings
       WHERE status = 'approved' AND category IS NOT NULL AND category != ''
       GROUP BY category
@@ -89,132 +144,22 @@ router.get('/categories/popular', async (req, res) => {
       LIMIT 10
     `);
 
-    const popular = result.rows.map(row => ({
-      category: row.category,
-      count: parseInt(row.count)
-    }));
-
-    res.status(200).json({
+    res.json({
       status: 'success',
-      data: popular
+      data: result.rows.map(r => ({
+        category: r.category,
+        count: parseInt(r.count)
+      }))
     });
   } catch (err) {
     console.error('Error fetching popular categories:', err.stack);
-    res.status(500).json({ status: 'error', message: 'Server error' });
-  }
-});
-
-// ────────────────────────────────────────────────
-// Other existing routes (unchanged)
-// ────────────────────────────────────────────────
-
-// Get single listing, user listings, ratings, etc. remain the same...
-
-// Get all approved listings (Marketplace) - public, paginated
-router.get('/', async (req, res) => {
-  try {
-    const limit = parseInt(req.query.limit) || 10;
-    const offset = parseInt(req.query.offset) || 0;
-
-    const result = await pool.query(`
-      SELECT 
-        id,
-        user_id,
-        title,
-        description,
-        price,
-        condition,
-        whatsapp_phone,
-        image_urls,
-        stock_quantity,
-        category,
-        average_rating,
-        rating_count,
-        created_at
-      FROM listings
-      WHERE status = 'approved'
-      ORDER BY created_at DESC
-      LIMIT $1 OFFSET $2
-    `, [limit, offset]);
-
-    const totalResult = await pool.query(
-      'SELECT COUNT(*) FROM listings WHERE status = $1',
-      ['approved']
-    );
-
-    // Convert numeric fields to actual numbers (fixes frontend toFixed crash)
-    const cleanedRows = result.rows.map(row => ({
-      ...row,
-      price: Number(row.price) || 0,
-      average_rating: Number(row.average_rating) || 0,
-      rating_count: Number(row.rating_count) || 0,
-      stock_quantity: Number(row.stock_quantity) || 0,
-    }));
-
-    res.status(200).json({
-      status: 'success',
-      count: cleanedRows.length,
-      total: parseInt(totalResult.rows[0].count),
-      data: cleanedRows
-    });
-  } catch (err) {
-    console.error('Error fetching approved listings:', err.stack);
-    res.status(500).json({ status: 'error', message: 'Failed to fetch listings' });
-  }
-});
-
-// Get single listing by ID - public (used by ListingDetail)
-router.get('/:id', async (req, res) => {
-  const { id } = req.params;
-
-  try {
-    const result = await pool.query(`
-      SELECT 
-        l.id,
-        l.user_id,
-        l.title,
-        l.description,
-        l.price,
-        l.condition,
-        l.whatsapp_phone,
-        l.image_urls,
-        l.stock_quantity,
-        l.category,
-        l.average_rating,
-        l.rating_count,
-        l.created_at,
-        u.username,
-        u.shop_name,
-        u.avatar_url,
-        u.cover_image_url
-      FROM listings l
-      JOIN users u ON l.user_id = u.id
-      WHERE l.id = $1
-    `, [id]);
-
-    if (result.rowCount === 0) {
-      return res.status(404).json({ message: 'Listing not found' });
-    }
-
-    const listing = result.rows[0];
-
-    // Convert numeric fields to real numbers
-    const cleanedListing = {
-      ...listing,
-      price: Number(listing.price) || 0,
-      average_rating: Number(listing.average_rating) || 0,
-      rating_count: Number(listing.rating_count) || 0,
-      stock_quantity: Number(listing.stock_quantity) || 0,
-    };
-
-    res.json(cleanedListing);
-  } catch (err) {
-    console.error('Error fetching single listing:', err.stack);
     res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Check if current user already rated this listing
+// ────────────────────────────────────────────────
+// Protected: Check if user already rated this listing
+// ────────────────────────────────────────────────
 router.get('/:id/rating-status', authMiddleware, async (req, res) => {
   const listingId = req.params.id;
   const userId = req.user.userId;
@@ -239,7 +184,9 @@ router.get('/:id/rating-status', authMiddleware, async (req, res) => {
   }
 });
 
-// Get all ratings received on seller's listings (owner or admin only)
+// ────────────────────────────────────────────────
+// Protected: Get all ratings on seller's listings (owner or admin)
+// ────────────────────────────────────────────────
 router.get('/users/:userId/ratings', authMiddleware, async (req, res) => {
   const sellerId = req.params.userId;
   const currentUserId = req.user.userId;
@@ -252,13 +199,9 @@ router.get('/users/:userId/ratings', authMiddleware, async (req, res) => {
   try {
     const ratings = await pool.query(`
       SELECT 
-        r.id,
-        r.rating,
-        r.comment,
-        r.created_at,
+        r.id, r.rating, r.comment, r.created_at,
         u.username AS rater_username,
-        l.title AS listing_title,
-        l.id AS listing_id
+        l.title AS listing_title, l.id AS listing_id
       FROM ratings r
       JOIN listings l ON r.listing_id = l.id
       JOIN users u ON r.user_id = u.id
@@ -266,7 +209,6 @@ router.get('/users/:userId/ratings', authMiddleware, async (req, res) => {
       ORDER BY r.created_at DESC
     `, [sellerId]);
 
-    // Ensure rating is number
     const cleanedRatings = ratings.rows.map(r => ({
       ...r,
       rating: Number(r.rating) || 0
@@ -283,19 +225,19 @@ router.get('/users/:userId/ratings', authMiddleware, async (req, res) => {
   }
 });
 
-// Get listings for a specific user (public approved + private for owner/admin)
+// ────────────────────────────────────────────────
+// Protected: Get user's listings (all for owner, approved only for public)
+// ────────────────────────────────────────────────
 router.get('/user/:userId', async (req, res) => {
   const { userId } = req.params;
 
   const token = req.headers.authorization?.split(' ')[1];
   let currentUserId = null;
-  let isAdmin = false;
 
   if (token) {
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       currentUserId = decoded.userId;
-      isAdmin = decoded.role === 'admin';
     } catch (err) {
       console.log('Optional token invalid:', err.message);
     }
@@ -306,27 +248,16 @@ router.get('/user/:userId', async (req, res) => {
   try {
     let query = `
       SELECT 
-        id,
-        user_id,
-        title,
-        description,
-        price,
-        condition,
-        whatsapp_phone,
-        image_urls,
-        stock_quantity,
-        category,
-        average_rating,
-        rating_count,
-        status,
-        created_at
+        id, user_id, title, description, price, condition, whatsapp_phone,
+        image_urls, stock_quantity, category, average_rating, rating_count,
+        status, created_at,
+        variants
       FROM listings 
       WHERE user_id = $1
     `;
-
     const params = [userId];
 
-    if (!isOwner && !isAdmin) {
+    if (!isOwner) {
       query += ` AND status = 'approved'`;
     }
 
@@ -334,14 +265,7 @@ router.get('/user/:userId', async (req, res) => {
 
     const result = await pool.query(query, params);
 
-    // Convert numerics
-    const cleanedRows = result.rows.map(row => ({
-      ...row,
-      price: Number(row.price) || 0,
-      average_rating: Number(row.average_rating) || 0,
-      rating_count: Number(row.rating_count) || 0,
-      stock_quantity: Number(row.stock_quantity) || 0,
-    }));
+    const cleanedRows = result.rows.map(cleanListing);
 
     res.json({
       status: 'success',
@@ -355,10 +279,8 @@ router.get('/user/:userId', async (req, res) => {
 });
 
 // ────────────────────────────────────────────────
-// POST ROUTES (protected)
+// Protected: Create new listing (pending approval)
 // ────────────────────────────────────────────────
-
-// Create new listing (pending approval)
 router.post('/', authMiddleware, async (req, res) => {
   const {
     title,
@@ -368,23 +290,35 @@ router.post('/', authMiddleware, async (req, res) => {
     whatsapp_phone,
     image_urls = [],
     stock_quantity = 1,
-    category = 'Other'
+    category = 'Other',
+    variants = []
   } = req.body;
 
   if (!title?.trim()) return res.status(400).json({ message: 'Title is required' });
   if (!price || isNaN(price) || price <= 0) return res.status(400).json({ message: 'Valid positive price required' });
   if (stock_quantity < 1) return res.status(400).json({ message: 'Stock quantity must be at least 1' });
 
+  // ── Variants validation & cleaning ──
+  if (!Array.isArray(variants)) {
+    return res.status(400).json({ message: 'Variants must be an array' });
+  }
+
+  const cleanedVariants = variants.filter(v => {
+    const hasOption = (v.color || '').trim() || (v.size || '').trim();
+    const stockValid = Number(v.stock) >= 0 && !isNaN(Number(v.stock));
+    return hasOption && stockValid;
+  });
+
   try {
     const result = await pool.query(
       `INSERT INTO listings (
         user_id, title, description, price, condition, whatsapp_phone, image_urls,
-        stock_quantity, category, status
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')
+        stock_quantity, category, variants, status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending')
       RETURNING id, title, status, created_at`,
       [
         req.user.userId, title.trim(), description || null, price, condition,
-        whatsapp_phone || null, image_urls, stock_quantity, category
+        whatsapp_phone || null, image_urls, stock_quantity, category, cleanedVariants
       ]
     );
 
@@ -399,7 +333,9 @@ router.post('/', authMiddleware, async (req, res) => {
   }
 });
 
-// Rating submission endpoint (protected)
+// ────────────────────────────────────────────────
+// Protected: Submit rating
+// ────────────────────────────────────────────────
 router.post('/:id/rating', authMiddleware, async (req, res) => {
   const { rating, comment } = req.body;
   const listingId = req.params.id;
@@ -440,40 +376,134 @@ router.post('/:id/rating', authMiddleware, async (req, res) => {
 });
 
 // ────────────────────────────────────────────────
-// PATCH ROUTE (protected - owner only)
+// Protected: Update listing (owner only) - FIXED & SAFE
 // ────────────────────────────────────────────────
-
 router.patch('/:id', authMiddleware, async (req, res) => {
-  const { stock_quantity } = req.body;
-  const listingId = req.params.id;
+  const { id } = req.params;
   const userId = req.user.userId;
 
-  if (stock_quantity == null || stock_quantity < 0) {
-    return res.status(400).json({ message: 'Valid non-negative stock quantity required' });
+  const allowedFields = [
+    'title',
+    'description',
+    'price',
+    'condition',
+    'whatsapp_phone',
+    'image_url',
+    'image_urls',
+    'stock_quantity',
+    'category',
+    'variants'
+  ];
+
+  const updates = {};
+  allowedFields.forEach(field => {
+    if (req.body[field] !== undefined) {
+      updates[field] = req.body[field];
+    }
+  });
+
+  if (Object.keys(updates).length === 0) {
+    return res.status(400).json({ message: 'No valid fields provided for update' });
+  }
+
+  // Validation
+  if ('price' in updates) {
+    const priceVal = Number(updates.price);
+    if (isNaN(priceVal) || priceVal <= 0) {
+      return res.status(400).json({ message: 'Price must be a positive number' });
+    }
+    updates.price = priceVal;
+  }
+
+  if ('stock_quantity' in updates) {
+    const stockVal = Number(updates.stock_quantity);
+    if (isNaN(stockVal) || stockVal < 0) {
+      return res.status(400).json({ message: 'Stock quantity cannot be negative' });
+    }
+    updates.stock_quantity = stockVal;
   }
 
   try {
-    const result = await pool.query(
-      'UPDATE listings SET stock_quantity = $1 WHERE id = $2 AND user_id = $3 RETURNING *',
-      [stock_quantity, listingId, userId]
+    // Check ownership
+    const ownershipCheck = await pool.query(
+      'SELECT user_id FROM listings WHERE id = $1',
+      [id]
     );
 
-    if (result.rowCount === 0) {
-      return res.status(404).json({ message: 'Listing not found or not yours' });
+    if (ownershipCheck.rowCount === 0) {
+      return res.status(404).json({ message: 'Listing not found' });
     }
 
-    res.json(result.rows[0]);
+    if (ownershipCheck.rows[0].user_id !== userId) {
+      return res.status(403).json({ message: 'You are not authorized to edit this listing' });
+    }
+
+    // Build dynamic UPDATE
+    const setParts = [];
+    const values = [];
+    let index = 1;
+
+    for (const [key, rawValue] of Object.entries(updates)) {
+      let value = rawValue;
+
+      if (key === 'variants') {
+        // Must be an array
+        if (!Array.isArray(value)) {
+          return res.status(400).json({ message: 'Variants must be an array' });
+        }
+
+        // Optional: clean/filter invalid variants (recommended)
+        value = value.filter(v => {
+          const hasOption = (v.color || '').trim() || (v.size || '').trim();
+          const stockValid = Number(v.stock) >= 0 && !isNaN(Number(v.stock));
+          return hasOption && stockValid;
+        });
+
+        // Explicitly stringify for jsonb column (safest)
+        value = JSON.stringify(value);
+      }
+
+      // image_urls (text[]) → pass array directly (already correct)
+
+      setParts.push(`${key} = $${index}`);
+      values.push(value);
+      index++;
+    }
+
+    values.push(id);
+
+    const queryText = `
+      UPDATE listings
+      SET ${setParts.join(', ')}
+      WHERE id = $${index}
+      RETURNING *
+    `;
+
+    const result = await pool.query(queryText, values);
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: 'Listing not found' });
+    }
+
+    res.json(cleanListing(result.rows[0]));
   } catch (err) {
-    console.error('Stock update error:', err.stack);
-    res.status(500).json({ message: 'Failed to update stock' });
+    console.error('PATCH /listings/:id failed:', {
+      error: err.message,
+      stack: err.stack,
+      receivedBody: req.body,   // ← helps debug what frontend actually sent
+      id,
+      userId
+    });
+    res.status(500).json({ 
+      message: 'Failed to update listing',
+      error: err.message 
+    });
   }
 });
 
 // ────────────────────────────────────────────────
-// DELETE ROUTES (protected)
+// Protected: Delete listing (owner or admin)
 // ────────────────────────────────────────────────
-
-// Delete listing (owner or admin)
 router.delete('/:id', authMiddleware, async (req, res) => {
   const { id } = req.params;
 
@@ -495,7 +525,9 @@ router.delete('/:id', authMiddleware, async (req, res) => {
   }
 });
 
-// Delete a rating (seller of the listing or admin)
+// ────────────────────────────────────────────────
+// Protected: Delete a rating (listing owner or admin)
+// ────────────────────────────────────────────────
 router.delete('/ratings/:ratingId', authMiddleware, async (req, res) => {
   const ratingId = req.params.ratingId;
   const currentUserId = req.user.userId;
