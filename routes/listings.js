@@ -4,7 +4,7 @@ const pool = require('../models/db');
 const authMiddleware = require('../middleware/auth');
 const jwt = require('jsonwebtoken');
 
-// Helper to safely convert numeric fields and ensure arrays
+// ── Helper: Clean listing data (always return arrays, convert numbers) ──
 const cleanListing = (row) => ({
   ...row,
   price: Number(row.price) || 0,
@@ -16,9 +16,11 @@ const cleanListing = (row) => ({
 });
 
 // ────────────────────────────────────────────────
-// GET /api/listings
-// Public – paginated, sorted, searchable, filterable marketplace listings
+// PUBLIC ROUTES
 // ────────────────────────────────────────────────
+
+// GET /api/listings
+// Paginated, sorted, searchable, filterable marketplace listings
 router.get('/', async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -100,9 +102,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-// ────────────────────────────────────────────────
 // GET /api/listings/:id
-// ────────────────────────────────────────────────
 router.get('/:id', async (req, res) => {
   const { id } = req.params;
 
@@ -130,9 +130,7 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// ────────────────────────────────────────────────
 // GET /api/listings/categories/popular
-// ────────────────────────────────────────────────
 router.get('/categories/popular', async (req, res) => {
   try {
     const result = await pool.query(`
@@ -158,8 +156,10 @@ router.get('/categories/popular', async (req, res) => {
 });
 
 // ────────────────────────────────────────────────
-// Protected: Check if user already rated this listing
+// PROTECTED ROUTES
 // ────────────────────────────────────────────────
+
+// GET /api/listings/:id/rating-status
 router.get('/:id/rating-status', authMiddleware, async (req, res) => {
   const listingId = req.params.id;
   const userId = req.user.userId;
@@ -184,9 +184,7 @@ router.get('/:id/rating-status', authMiddleware, async (req, res) => {
   }
 });
 
-// ────────────────────────────────────────────────
-// Protected: Get all ratings on seller's listings (owner or admin)
-// ────────────────────────────────────────────────
+// GET /api/listings/users/:userId/ratings
 router.get('/users/:userId/ratings', authMiddleware, async (req, res) => {
   const sellerId = req.params.userId;
   const currentUserId = req.user.userId;
@@ -225,9 +223,7 @@ router.get('/users/:userId/ratings', authMiddleware, async (req, res) => {
   }
 });
 
-// ────────────────────────────────────────────────
-// Protected: Get user's listings (all for owner, approved only for public)
-// ────────────────────────────────────────────────
+// GET /api/listings/user/:userId
 router.get('/user/:userId', async (req, res) => {
   const { userId } = req.params;
 
@@ -278,9 +274,7 @@ router.get('/user/:userId', async (req, res) => {
   }
 });
 
-// ────────────────────────────────────────────────
-// Protected: Create new listing (pending approval)
-// ────────────────────────────────────────────────
+// POST /api/listings
 router.post('/', authMiddleware, async (req, res) => {
   const {
     title,
@@ -298,7 +292,6 @@ router.post('/', authMiddleware, async (req, res) => {
   if (!price || isNaN(price) || price <= 0) return res.status(400).json({ message: 'Valid positive price required' });
   if (stock_quantity < 1) return res.status(400).json({ message: 'Stock quantity must be at least 1' });
 
-  // ── Variants validation & cleaning ──
   if (!Array.isArray(variants)) {
     return res.status(400).json({ message: 'Variants must be an array' });
   }
@@ -333,9 +326,7 @@ router.post('/', authMiddleware, async (req, res) => {
   }
 });
 
-// ────────────────────────────────────────────────
-// Protected: Submit rating
-// ────────────────────────────────────────────────
+// POST /api/listings/:id/rating
 router.post('/:id/rating', authMiddleware, async (req, res) => {
   const { rating, comment } = req.body;
   const listingId = req.params.id;
@@ -375,9 +366,7 @@ router.post('/:id/rating', authMiddleware, async (req, res) => {
   }
 });
 
-// ────────────────────────────────────────────────
-// Protected: Update listing (owner only) - FIXED & SAFE
-// ────────────────────────────────────────────────
+// PATCH /api/listings/:id
 router.patch('/:id', authMiddleware, async (req, res) => {
   const { id } = req.params;
   const userId = req.user.userId;
@@ -447,23 +436,18 @@ router.patch('/:id', authMiddleware, async (req, res) => {
       let value = rawValue;
 
       if (key === 'variants') {
-        // Must be an array
         if (!Array.isArray(value)) {
           return res.status(400).json({ message: 'Variants must be an array' });
         }
 
-        // Optional: clean/filter invalid variants (recommended)
         value = value.filter(v => {
           const hasOption = (v.color || '').trim() || (v.size || '').trim();
           const stockValid = Number(v.stock) >= 0 && !isNaN(Number(v.stock));
           return hasOption && stockValid;
         });
 
-        // Explicitly stringify for jsonb column (safest)
         value = JSON.stringify(value);
       }
-
-      // image_urls (text[]) → pass array directly (already correct)
 
       setParts.push(`${key} = $${index}`);
       values.push(value);
@@ -490,7 +474,7 @@ router.patch('/:id', authMiddleware, async (req, res) => {
     console.error('PATCH /listings/:id failed:', {
       error: err.message,
       stack: err.stack,
-      receivedBody: req.body,   // ← helps debug what frontend actually sent
+      receivedBody: req.body,
       id,
       userId
     });
@@ -501,9 +485,7 @@ router.patch('/:id', authMiddleware, async (req, res) => {
   }
 });
 
-// ────────────────────────────────────────────────
-// Protected: Delete listing (owner or admin)
-// ────────────────────────────────────────────────
+// DELETE /api/listings/:id
 router.delete('/:id', authMiddleware, async (req, res) => {
   const { id } = req.params;
 
@@ -525,9 +507,7 @@ router.delete('/:id', authMiddleware, async (req, res) => {
   }
 });
 
-// ────────────────────────────────────────────────
-// Protected: Delete a rating (listing owner or admin)
-// ────────────────────────────────────────────────
+// DELETE /api/listings/ratings/:ratingId
 router.delete('/ratings/:ratingId', authMiddleware, async (req, res) => {
   const ratingId = req.params.ratingId;
   const currentUserId = req.user.userId;
