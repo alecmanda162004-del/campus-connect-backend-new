@@ -4,7 +4,15 @@ const pool = require('../models/db');
 const authMiddleware = require('../middleware/auth');
 const jwt = require('jsonwebtoken');
 
-// ── Helper: Clean listing data (always return arrays, convert numbers) ──
+// ────────────────────────────────────────────────
+// HELPER FUNCTIONS
+// ────────────────────────────────────────────────
+
+/**
+ * Clean listing row: convert numbers, ensure arrays
+ * @param {Object} row - Raw database row
+ * @returns {Object} Cleaned listing object
+ */
 const cleanListing = (row) => ({
   ...row,
   price: Number(row.price) || 0,
@@ -19,17 +27,22 @@ const cleanListing = (row) => ({
 // PUBLIC ROUTES
 // ────────────────────────────────────────────────
 
-// GET /api/listings
-// Paginated, sorted, searchable, filterable marketplace listings
+/**
+ * GET /api/listings
+ * Paginated, sorted, searchable, filterable marketplace listings
+ * Supports ?page, ?limit, ?sort, ?search, ?category
+ * If no ?limit= is provided, returns ALL matching listings (no default cap)
+ */
 router.get('/', async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 24;
+    const limitParam = req.query.limit;
+    const limit = limitParam ? parseInt(limitParam) : null; // null = no limit
     const sort = req.query.sort || 'newest';
     const search = req.query.search?.trim();
     const category = req.query.category;
 
-    if (page < 1 || limit < 1 || limit > 100) {
+    if (limit !== null && (page < 1 || limit < 1 || limit > 100)) {
       return res.status(400).json({ message: 'Invalid page or limit' });
     }
 
@@ -37,7 +50,7 @@ router.get('/', async (req, res) => {
     if (sort === 'price-low') orderBy = 'l.price ASC';
     if (sort === 'price-high') orderBy = 'l.price DESC';
 
-    const offset = (page - 1) * limit;
+    const offset = limit !== null ? (page - 1) * limit : 0;
 
     let where = "WHERE l.status = 'approved'";
     const params = [];
@@ -55,7 +68,7 @@ router.get('/', async (req, res) => {
       paramIndex++;
     }
 
-    const listingsQuery = `
+    let listingsQuery = `
       SELECT 
         l.id, l.user_id, l.title, l.description, l.price, l.condition, l.whatsapp_phone,
         l.image_urls, l.stock_quantity, l.category, l.average_rating, l.rating_count,
@@ -66,16 +79,20 @@ router.get('/', async (req, res) => {
       JOIN users u ON l.user_id = u.id
       ${where}
       ORDER BY ${orderBy}
-      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
     `;
-    params.push(limit, offset);
+
+    // Only add LIMIT/OFFSET if limit is provided
+    if (limit !== null) {
+      listingsQuery += ` LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+      params.push(limit, offset);
+    }
 
     const totalQuery = `
       SELECT COUNT(*) 
       FROM listings l
       ${where.replace('l.', '')}
     `;
-    const totalParams = params.slice(0, -2);
+    const totalParams = params.slice(0, -2); // exclude limit/offset if present
 
     const [listingsRes, totalRes] = await Promise.all([
       pool.query(listingsQuery, params),
@@ -88,13 +105,13 @@ router.get('/', async (req, res) => {
     res.status(200).json({
       status: 'success',
       data: listings,
-      pagination: {
+      pagination: limit !== null ? {
         currentPage: page,
         totalPages: Math.ceil(total / limit),
         totalItems: total,
         hasNext: page * limit < total,
         hasPrev: page > 1
-      }
+      } : undefined
     });
   } catch (err) {
     console.error('Error fetching listings:', err.stack);
@@ -156,7 +173,7 @@ router.get('/categories/popular', async (req, res) => {
 });
 
 // ────────────────────────────────────────────────
-// PROTECTED ROUTES
+// PROTECTED ROUTES (require auth)
 // ────────────────────────────────────────────────
 
 // GET /api/listings/:id/rating-status
