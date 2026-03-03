@@ -22,17 +22,55 @@ router.post('/image', authMiddleware, upload.single('image'), async (req, res) =
       return res.status(400).json({ message: 'No image file provided' });
     }
 
-    const result = await cloudinary.uploader.upload_stream(
-      { folder: 'campus-connect' }, // optional folder in Cloudinary
-      (error, result) => {
-        if (error) throw error;
-        res.json({ url: result.secure_url });
-      }
-    ).end(req.file.buffer);
+    const result = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { folder: 'campus-connect' },
+        (error, result) => {
+          if (error) reject(error);
+          else resolve(result);
+        }
+      );
+      stream.end(req.file.buffer);
+    });
 
+    res.json({ url: result.secure_url });
   } catch (err) {
     console.error('Cloudinary upload error:', err);
     res.status(500).json({ message: 'Failed to upload image' });
+  }
+});
+
+// Multiple image upload route for hero carousel (protected, max 8)
+// Changed path from '/multiple-hero' → '/multiple' to match frontend call
+router.post('/multiple', authMiddleware, upload.array('images', 8), async (req, res) => {
+  try {
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ message: 'No images provided' });
+    }
+
+    const uploadPromises = req.files.map(file => {
+      return new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { folder: 'campus-connect/hero' },
+          (error, result) => {
+            if (error) reject(error);
+            else resolve(result.secure_url);
+          }
+        );
+        stream.end(file.buffer);
+      });
+    });
+
+    const urls = await Promise.all(uploadPromises);
+
+    res.json({
+      status: 'success',
+      message: `${urls.length} image${urls.length > 1 ? 's' : ''} uploaded`,
+      urls,
+    });
+  } catch (err) {
+    console.error('Multi-upload error:', err);
+    res.status(500).json({ message: 'Failed to upload images' });
   }
 });
 
