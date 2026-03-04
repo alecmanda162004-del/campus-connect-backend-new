@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
-const { Pool } = require('pg'); // Added for PostgreSQL connection
+const { Pool } = require('pg');
 
 // Import your route files
 const healthRouter = require('./routes/health');
@@ -12,6 +12,7 @@ const uploadRouter = require('./routes/upload');
 const usersRouter = require('./routes/users');
 const settingsRouter = require('./routes/settings');
 const feedbackRouter = require('./routes/feedback');
+const teamRoutes = require('./routes/team');
 
 // Load environment variables
 dotenv.config();
@@ -45,35 +46,33 @@ app.use(cors({
 app.use(express.json());
 
 // ────────────────────────────────────────────────
-// NEW: Auto-increment visits counter on real page loads (skip API/admin/static)
+// Auto-increment visits counter in table "stats"
+// Now counts homepage (/) and most real page loads
 app.use(async (req, res, next) => {
-  // Skip counting for:
-  // - API calls (/api/...)
-  // - Admin paths
-  // - Static files (anything with .js, .css, .png, etc.)
-  // - Root and health endpoints
+  // Skip only API calls and static file requests
   if (
-    req.path.startsWith('/api') ||
-    req.path.startsWith('/admin') ||
-    req.path.includes('.') ||
-    req.path === '/' ||
-    req.path === '/health'
+    req.path.startsWith('/api') ||           // all API endpoints
+    req.path.startsWith('/static') ||       // frontend static assets
+    req.path.startsWith('/assets') ||       // common static folder
+    req.path.includes('.')                  // any file with extension (.js, .css, .png, etc.)
   ) {
     return next();
   }
 
   try {
-    await pool.query(`
-      INSERT INTO stats (key, value) 
-      VALUES ('visits', 1)
-      ON CONFLICT (key) 
-      DO UPDATE SET 
+    const result = await pool.query(`
+      INSERT INTO stats (key, value, updated_at)
+      VALUES ('visits', 1, CURRENT_TIMESTAMP)
+      ON CONFLICT (key)
+      DO UPDATE SET
         value = stats.value + 1,
         updated_at = CURRENT_TIMESTAMP
+      RETURNING value
     `);
+
+    console.log(`Visit counted for path "${req.path}". Total visits now: ${result.rows[0].value}`);
   } catch (err) {
-    console.error('Visit increment failed:', err.message);
-    // Don't block the request - just log
+    console.error('Failed to count visit in stats table:', err.message);
   }
 
   next();
@@ -89,9 +88,10 @@ app.use('/api/upload', uploadRouter);
 app.use('/api/users', usersRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/feedback', feedbackRouter);
+app.use('/api/team', teamRoutes);
 
 // ────────────────────────────────────────────────
-// Admin Stats Endpoints (added directly here)
+// Admin Stats Endpoints
 app.get('/api/admin/stats/users', async (req, res) => {
   try {
     const result = await pool.query('SELECT COUNT(*) AS total FROM users');
@@ -106,15 +106,17 @@ app.get('/api/admin/stats/users', async (req, res) => {
 app.get('/api/admin/stats/visits', async (req, res) => {
   try {
     const result = await pool.query(`
-      INSERT INTO stats (key, value) 
-      VALUES ('visits', 1)
-      ON CONFLICT (key) 
-      DO UPDATE SET 
-        value = stats.value + 1,
-        updated_at = CURRENT_TIMESTAMP
-      RETURNING value AS "totalVisits"
+      SELECT value AS "totalVisits"
+      FROM stats
+      WHERE key = 'visits'
     `);
-    const totalVisits = parseInt(result.rows[0].totalVisits, 10);
+
+    const totalVisits = result.rows.length > 0 
+      ? parseInt(result.rows[0].totalVisits, 10) 
+      : 0;
+
+    console.log(`Admin requested visits stat: ${totalVisits}`);
+
     res.json({ totalVisits });
   } catch (err) {
     console.error('Visits stats error:', err.message);
