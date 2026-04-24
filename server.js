@@ -30,12 +30,14 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // ────────────────────────────────────────────────
-// CORS – allow your actual frontend domains
+// CORS – allow your actual frontend domains (added new domain)
 app.use(cors({
   origin: [
     'https://campus-connect-frontend-three.vercel.app',
     'http://localhost:3000',
-    'http://localhost:5173'
+    'http://localhost:5173',
+    'https://campus-connect-zm.com',           // ← Your new domain added
+    'https://www.campus-connect-zm.com'        // ← Also added www version (good practice)
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -47,14 +49,12 @@ app.use(express.json());
 
 // ────────────────────────────────────────────────
 // Auto-increment visits counter in table "stats"
-// Now counts homepage (/) and most real page loads
 app.use(async (req, res, next) => {
-  // Skip only API calls and static file requests
   if (
-    req.path.startsWith('/api') ||           // all API endpoints
-    req.path.startsWith('/static') ||       // frontend static assets
-    req.path.startsWith('/assets') ||       // common static folder
-    req.path.includes('.')                  // any file with extension (.js, .css, .png, etc.)
+    req.path.startsWith('/api') ||
+    req.path.startsWith('/static') ||
+    req.path.startsWith('/assets') ||
+    req.path.includes('.')
   ) {
     return next();
   }
@@ -170,6 +170,8 @@ app.listen(PORT, () => {
   console.log(`CORS allowed origins:`, [
     'https://campus-connect-frontend-three.vercel.app',
     'http://localhost:3000',
-    'http://localhost:5173'
+    'http://localhost:5173',
+    'https://campus-connect-zm.com',
+    'https://www.campus-connect-zm.com'
   ]);
 });
