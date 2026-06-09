@@ -34,7 +34,7 @@ router.get('/', authMiddleware, async (req, res) => {
     const result = await pool.query(
       `SELECT f.id, f.rating, f.comment, f.created_at, u.username
        FROM feedback f
-       JOIN users u ON f.user_id = u.id
+       LEFT JOIN users u ON f.user_id = u.id
        ORDER BY f.created_at DESC`
     );
     res.json(result.rows);
