@@ -8,9 +8,7 @@ const adminMiddleware = require('../middleware/admin');
 router.get('/', async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT id, name, role, bio, image, "order", created_at, updated_at
-       FROM team_members
-       ORDER BY "order" ASC, id ASC`
+      `SELECT id, name, role, bio, image, created_at FROM team_members ORDER BY id ASC`
     );
     res.status(200).json({ success: true, count: result.rows.length, data: result.rows });
   } catch (err) {
