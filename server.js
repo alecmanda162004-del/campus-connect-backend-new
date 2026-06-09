@@ -1,177 +1,111 @@
 const express = require('express');
-const cors = require('cors');
-const dotenv = require('dotenv');
-const { Pool } = require('pg');
-
-// Import your route files
-const healthRouter = require('./routes/health');
-const listingsRouter = require('./routes/listings');
-const authRouter = require('./routes/auth');
-const adminRouter = require('./routes/admin');
-const uploadRouter = require('./routes/upload');
-const usersRouter = require('./routes/users');
-const settingsRouter = require('./routes/settings');
-const feedbackRouter = require('./routes/feedback');
-const teamRoutes = require('./routes/team');
-
-// Load environment variables
+const cors    = require('cors');
+const crypto  = require('crypto');
+const dotenv  = require('dotenv');
 dotenv.config();
 
-// Create PostgreSQL connection pool
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-});
+if (!process.env.JWT_SECRET)   throw new Error('JWT_SECRET env var is not set');
+if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL env var is not set');
 
-const app = express();
+const healthRouter   = require('./routes/health');
+const listingsRouter = require('./routes/listings');
+const authRouter     = require('./routes/auth');
+const adminRouter    = require('./routes/admin');
+const uploadRouter   = require('./routes/upload');
+const usersRouter    = require('./routes/users');
+const settingsRouter = require('./routes/settings');
+const feedbackRouter = require('./routes/feedback');
+const teamRouter     = require('./routes/team');
+const reportsRouter  = require('./routes/reports');
+const savedRouter    = require('./routes/saved');
+const auctionsRouter = require('./routes/auctions');
+const pool           = require('./models/db');
 
-// ────────────────────────────────────────────────
-// PORT – Render forces process.env.PORT
+const app  = express();
 const PORT = process.env.PORT || 5000;
 
-// ────────────────────────────────────────────────
-// CORS – allow your actual frontend domains (added new domain)
 app.use(cors({
   origin: [
+    'https://campus-connect-zm.com',
+    'https://www.campus-connect-zm.com',
     'https://campus-connect-frontend-three.vercel.app',
     'http://localhost:3000',
     'http://localhost:5173',
-    'https://campus-connect-zm.com',           // ← Your new domain added
-    'https://www.campus-connect-zm.com'        // ← Also added www version (good practice)
   ],
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization'],
 }));
 
-// Parse JSON bodies
 app.use(express.json());
 
-// ────────────────────────────────────────────────
-// Auto-increment visits counter in table "stats"
+// ── Unique visitor tracker — fires on every GET /api/listings (real page loads)
 app.use(async (req, res, next) => {
-  if (
-    req.path.startsWith('/api') ||
-    req.path.startsWith('/static') ||
-    req.path.startsWith('/assets') ||
-    req.path.includes('.')
-  ) {
-    return next();
-  }
-
+  const track = req.path === '/api/listings' && req.method === 'GET';
+  if (!track) return next();
+  const ua    = req.headers['user-agent'] || '';
+  const isBot = /bot|crawl|spider|slurp|facebookexternalhit/i.test(ua);
+  if (isBot) return next();
   try {
-    const result = await pool.query(`
-      INSERT INTO stats (key, value, updated_at)
-      VALUES ('visits', 1, CURRENT_TIMESTAMP)
-      ON CONFLICT (key)
-      DO UPDATE SET
-        value = stats.value + 1,
-        updated_at = CURRENT_TIMESTAMP
-      RETURNING value
-    `);
-
-    console.log(`Visit counted for path "${req.path}". Total visits now: ${result.rows[0].value}`);
-  } catch (err) {
-    console.error('Failed to count visit in stats table:', err.message);
-  }
-
+    const sessionId = crypto
+      .createHash('sha256')
+      .update((req.ip || '') + ua.slice(0, 100) + new Date().toDateString())
+      .digest('hex');
+    await pool.query(
+      'INSERT INTO visitor_sessions (session_id) VALUES ($1) ON CONFLICT DO NOTHING',
+      [sessionId]
+    );
+  } catch (_) {}
   next();
 });
 
-// ────────────────────────────────────────────────
-// Routes
-app.use('/api/health', healthRouter);
-app.use('/api/listings', listingsRouter);
-app.use('/api/auth', authRouter);
-app.use('/api/admin', adminRouter);
-app.use('/api/upload', uploadRouter);
-app.use('/api/users', usersRouter);
-app.use('/api/settings', settingsRouter);
-app.use('/api/feedback', feedbackRouter);
-app.use('/api/team', teamRoutes);
-
-// ────────────────────────────────────────────────
-// Admin Stats Endpoints
-app.get('/api/admin/stats/users', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT COUNT(*) AS total FROM users');
-    const total = parseInt(result.rows[0].total, 10);
-    res.json({ total });
-  } catch (err) {
-    console.error('Users stats error:', err.message);
-    res.status(500).json({ message: 'Server error' });
+// ── Auto-close expired auctions on every request (lightweight check)
+app.use(async (req, res, next) => {
+  if (req.path === '/api/auctions' || req.path.startsWith('/api/auctions/')) {
+    try {
+      await pool.query(`
+        UPDATE auctions SET status = 'ended',
+          winner_id = (SELECT bidder_id FROM auction_bids WHERE auction_id = auctions.id ORDER BY amount DESC LIMIT 1)
+        WHERE status = 'active' AND ends_at <= NOW()
+      `);
+    } catch (_) {}
   }
+  next();
 });
 
-app.get('/api/admin/stats/visits', async (req, res) => {
+// ── Ban check
+app.use(async (req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return next();
   try {
-    const result = await pool.query(`
-      SELECT value AS "totalVisits"
-      FROM stats
-      WHERE key = 'visits'
-    `);
-
-    const totalVisits = result.rows.length > 0 
-      ? parseInt(result.rows[0].totalVisits, 10) 
-      : 0;
-
-    console.log(`Admin requested visits stat: ${totalVisits}`);
-
-    res.json({ totalVisits });
-  } catch (err) {
-    console.error('Visits stats error:', err.message);
-    res.status(500).json({ message: 'Server error' });
-  }
+    const jwt    = require('jsonwebtoken');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const result  = await pool.query('SELECT is_banned FROM users WHERE id = $1', [decoded.userId]);
+    if (result.rows[0]?.is_banned) {
+      return res.status(403).json({ message: 'Your account has been suspended. Contact support.' });
+    }
+  } catch (_) {}
+  next();
 });
 
-// ────────────────────────────────────────────────
-// Simple root + health endpoint
-app.get('/', (req, res) => {
-  res.json({
-    message: 'Campus-Connect Backend is running!',
-    environment: process.env.NODE_ENV || 'development',
-    timestamp: new Date().toISOString()
-  });
-});
+app.use('/api/health',    healthRouter);
+app.use('/api/listings',  listingsRouter);
+app.use('/api/auth',      authRouter);
+app.use('/api/admin',     adminRouter);
+app.use('/api/upload',    uploadRouter);
+app.use('/api/users',     usersRouter);
+app.use('/api/settings',  settingsRouter);
+app.use('/api/feedback',  feedbackRouter);
+app.use('/api/team',      teamRouter);
+app.use('/api/reports',   reportsRouter);
+app.use('/api/saved',     savedRouter);
+app.use('/api/auctions',  auctionsRouter);
 
-app.get('/health', (req, res) => {
-  res.status(200).json({
-    status: 'ok',
-    message: 'Backend is healthy',
-    uptime: process.uptime(),
-    timestamp: new Date().toISOString()
-  });
-});
-
-// ────────────────────────────────────────────────
-// 404 handler
-app.use((req, res) => {
-  res.status(404).json({
-    error: 'Not Found',
-    message: `Cannot ${req.method} ${req.originalUrl}`
-  });
-});
-
-// ────────────────────────────────────────────────
-// Global error handler
+app.get('/', (req, res) => res.json({ message: 'Campus-Connect API v2', status: 'ok' }));
+app.use((req, res) => res.status(404).json({ error: 'Not Found', path: req.originalUrl }));
 app.use((err, req, res, next) => {
-  console.error('Server error:', err.stack);
-  res.status(err.status || 500).json({
-    error: 'Internal Server Error',
-    message: process.env.NODE_ENV === 'production' ? 'Something went wrong' : err.message
-  });
+  console.error('Unhandled error:', err.stack);
+  res.status(err.status || 500).json({ error: 'Internal Server Error', message: process.env.NODE_ENV === 'production' ? 'Something went wrong' : err.message });
 });
 
-// ────────────────────────────────────────────────
-// Start server
-app.listen(PORT, () => {
-  console.log(`Backend server running on port ${PORT}`);
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`CORS allowed origins:`, [
-    'https://campus-connect-frontend-three.vercel.app',
-    'http://localhost:3000',
-    'http://localhost:5173',
-    'https://campus-connect-zm.com',
-    'https://www.campus-connect-zm.com'
-  ]);
-});
+app.listen(PORT, () => console.log(`Campus-Connect API v2 running on port ${PORT}`));

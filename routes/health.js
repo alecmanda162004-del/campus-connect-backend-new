@@ -1,15 +1,15 @@
-// backend/routes/health.js
-const express = require('express');
-const router = express.Router();
+// ── health.js ──────────────────────────────────
+const express1 = require('express');
+const r1 = express1.Router();
 
-// Health check endpoint
-router.get('/', (req, res) => {
+r1.get('/', (req, res) => {
   res.status(200).json({
     status: 'ok',
-    message: 'Campus-Connect backend is healthy and running!',
+    message: 'Campus-Connect backend is healthy',
+    uptime: process.uptime(),
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development'
+    environment: process.env.NODE_ENV || 'development',
   });
 });
 
-module.exports = router;
+module.exports = r1;

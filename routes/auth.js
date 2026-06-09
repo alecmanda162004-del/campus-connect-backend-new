@@ -4,44 +4,52 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const pool = require('../models/db');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-change-this'; // fallback only for dev
+const signToken = (user) =>
+  jwt.sign({ userId: user.id, role: user.role }, process.env.JWT_SECRET, { expiresIn: '7d' });
 
-// Register
+// POST /api/auth/register
 router.post('/register', async (req, res) => {
   const { username, email, password, whatsapp_phone } = req.body;
 
-  if (!username || !email || !password) {
+  if (!username?.trim() || !email?.trim() || !password) {
     return res.status(400).json({ message: 'Username, email, and password are required' });
   }
 
-  if (!email.includes('@') || password.length < 6) {
-    return res.status(400).json({ message: 'Invalid email format or password too short (min 6 chars)' });
+  if (!email.includes('@')) {
+    return res.status(400).json({ message: 'Invalid email format' });
+  }
+
+  if (password.length < 6) {
+    return res.status(400).json({ message: 'Password must be at least 6 characters' });
   }
 
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
 
+    // FIX: include role in RETURNING so the JWT has the correct role
     const result = await pool.query(
-      'INSERT INTO users (username, email, password_hash, whatsapp_phone) VALUES ($1, $2, $3, $4) RETURNING id, username, email, whatsapp_phone',
-      [username, email, hashedPassword, whatsapp_phone || null]
+      `INSERT INTO users (username, email, password_hash, whatsapp_phone)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, username, email, whatsapp_phone, role`,
+      [username.trim(), email.toLowerCase().trim(), hashedPassword, whatsapp_phone?.trim() || null]
     );
 
-    // In the try block, after inserting the user
-const user = result.rows[0];
+    const user = result.rows[0];
+    const token = signToken(user);
 
-const token = jwt.sign(
-  { userId: user.id, role: user.role },  // ← add role here
-  process.env.JWT_SECRET,
-  { expiresIn: '7d' }
-);
-
-res.status(201).json({
-  message: 'User registered successfully',
-  token,
-  user: { id: user.id, username: user.username, email: user.email, whatsapp_phone: user.whatsapp_phone, role: user.role }  // ← optional: return role too
-});
+    res.status(201).json({
+      message: 'Registration successful',
+      token,
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        whatsapp_phone: user.whatsapp_phone,
+        role: user.role,
+      },
+    });
   } catch (err) {
-    if (err.code === '23505') { // unique violation (username or email exists)
+    if (err.code === '23505') {
       return res.status(400).json({ message: 'Username or email already exists' });
     }
     console.error('Register error:', err);
@@ -49,16 +57,16 @@ res.status(201).json({
   }
 });
 
-// Login
+// POST /api/auth/login
 router.post('/login', async (req, res) => {
   const { email, password } = req.body;
 
-  if (!email || !password) {
+  if (!email?.trim() || !password) {
     return res.status(400).json({ message: 'Email and password are required' });
   }
 
   try {
-    const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    const result = await pool.query('SELECT * FROM users WHERE email = $1', [email.toLowerCase().trim()]);
     const user = result.rows[0];
 
     if (!user) {
@@ -70,18 +78,19 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ message: 'Invalid email or password' });
     }
 
-    // After password match
-const token = jwt.sign(
-  { userId: user.id, role: user.role },  // ← add role here
-  process.env.JWT_SECRET,
-  { expiresIn: '7d' }
-);
+    const token = signToken(user);
 
-res.json({
-  message: 'Login successful',
-  token,
-  user: { id: user.id, username: user.username, email: user.email, whatsapp_phone: user.whatsapp_phone, role: user.role }  // ← return role
-});
+    res.json({
+      message: 'Login successful',
+      token,
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        whatsapp_phone: user.whatsapp_phone,
+        role: user.role,
+      },
+    });
   } catch (err) {
     console.error('Login error:', err);
     res.status(500).json({ message: 'Server error during login' });
