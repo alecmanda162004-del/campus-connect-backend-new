@@ -382,7 +382,8 @@ router.patch('/:id', authMiddleware, async (req, res) => {
   const userId   = req.user.userId;
 
   const ALLOWED = ['title','description','price','condition','whatsapp_phone',
-                   'image_urls','stock_quantity','category','variants'];
+                   'image_urls','stock_quantity','category','variants',
+                   'location','campus','availability','price_type'];
   const updates  = {};
   ALLOWED.forEach((f) => { if (req.body[f] !== undefined) updates[f] = req.body[f]; });
 
@@ -395,7 +396,7 @@ router.patch('/:id', authMiddleware, async (req, res) => {
   try {
     const ownerCheck = await pool.query('SELECT user_id FROM listings WHERE id = $1', [id]);
     if (ownerCheck.rowCount === 0) return res.status(404).json({ message: 'Listing not found' });
-    if (ownerCheck.rows[0].user_id !== userId && req.user.role !== 'admin') {
+    if (Number(ownerCheck.rows[0].user_id) !== Number(userId) && req.user.role !== 'admin') {
       return res.status(403).json({ message: 'Not authorized' });
     }
 
@@ -438,67 +439,6 @@ router.delete('/:id', authMiddleware, async (req, res) => {
     res.json({ message: 'Listing deleted' });
   } catch (err) {
     res.status(500).json({ message: 'Server error' });
-  }
-});
-
-
-// ── PATCH /api/listings/:id — edit listing (owner only)
-router.patch('/:id', authMiddleware, async (req, res) => {
-  const { id } = req.params;
-  const userId = req.user.userId;
-
-  const {
-    title, description, price, condition, whatsapp_phone,
-    stock_quantity, category, image_urls, variants,
-    location: listingLocation, campus, availability, price_type,
-  } = req.body;
-
-  try {
-    // Verify ownership
-    const check = await pool.query('SELECT user_id FROM listings WHERE id = $1', [id]);
-    if (check.rowCount === 0) return res.status(404).json({ message: 'Listing not found' });
-    if (Number(check.rows[0].user_id) !== Number(userId) && req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Not authorized' });
-    }
-
-    const result = await pool.query(
-      `UPDATE listings SET
-        title          = COALESCE($1, title),
-        description    = COALESCE($2, description),
-        price          = COALESCE($3, price),
-        condition      = COALESCE($4, condition),
-        whatsapp_phone = COALESCE($5, whatsapp_phone),
-        stock_quantity = COALESCE($6, stock_quantity),
-        category       = COALESCE($7, category),
-        image_urls     = COALESCE($8, image_urls),
-        location       = $9,
-        campus         = $10,
-        availability   = $11,
-        price_type     = COALESCE($12, price_type),
-        updated_at     = NOW()
-       WHERE id = $13
-       RETURNING id, title, status, price, category`,
-      [
-        title?.trim()      || null,
-        description?.trim()|| null,
-        price ? Number(price) : null,
-        condition          || null,
-        whatsapp_phone?.trim() || null,
-        stock_quantity ? Number(stock_quantity) : null,
-        category           || null,
-        image_urls && image_urls.length > 0 ? image_urls : null,
-        listingLocation?.trim() || null,
-        campus?.trim()     || null,
-        availability?.trim()|| null,
-        price_type         || null,
-        id,
-      ]
-    );
-
-    res.json({ success: true, message: 'Listing updated', data: result.rows[0] });
-  } catch (err) {
-    console.error('PATCH /listings/:id error:', err.message);
-    res.status(500).json({ message: 'Failed to update listing' });
   }
 });
 
