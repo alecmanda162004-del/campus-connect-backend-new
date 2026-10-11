@@ -241,6 +241,15 @@ router.delete('/ratings/:ratingId', authMiddleware, async (req, res) => {
   }
 });
 
+
+// Reads the login token if there is one, without requiring it (public routes use this)
+function optionalUser(req) {
+  const h = req.headers.authorization;
+  if (!h) return null;
+  try { return jwt.verify(h.replace('Bearer ', ''), process.env.JWT_SECRET); }
+  catch (_) { return null; }
+}
+
 // ── GET /api/listings/:id
 router.get('/:id', async (req, res) => {
   try {
@@ -249,11 +258,20 @@ router.get('/:id', async (req, res) => {
              u.seller_rating, u.seller_rating_count
       FROM listings l
       JOIN users u ON l.user_id = u.id
-      WHERE l.id = $1 AND l.status = 'approved'
+      WHERE l.id = $1
     `, [req.params.id]);
 
     if (result.rowCount === 0) return res.status(404).json({ message: 'Listing not found' });
-    res.json(cleanListing(result.rows[0]));
+
+    // Public visitors only see approved listings; the owner and admins can also open
+    // pending/rejected ones (needed to edit a listing before it is approved).
+    const row    = result.rows[0];
+    const viewer = optionalUser(req);
+    const canSee = row.status === 'approved' ||
+      (viewer && (viewer.role === 'admin' || Number(viewer.userId) === Number(row.user_id)));
+    if (!canSee) return res.status(404).json({ message: 'Listing not found' });
+
+    res.json(cleanListing(row));
   } catch (err) {
     res.status(500).json({ message: 'Server error' });
   }
